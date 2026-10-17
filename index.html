@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>书架</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; font: 16px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+           background: #f6f4ef; color: #2b2b2b; }
+    @media (prefers-color-scheme: dark) { body { background: #1d1e20; color: #ddd; } input { background: #2a2b2e; color: #eee; border-color: #444 !important; } }
+    form { width: min(320px, 86vw); display: grid; gap: 12px; text-align: center; }
+    h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; letter-spacing: .08em; }
+    input { font: inherit; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; text-align: center; }
+    button { font: inherit; padding: 9px 12px; border: 0; border-radius: 8px; background: #7a5c3e; color: #fff; cursor: pointer; }
+    button[disabled] { opacity: .6; cursor: wait; }
+    #msg { min-height: 1.6em; margin: 0; font-size: 14px; color: #a0522d; }
+  </style>
+</head>
+<body>
+  <form id="f" autocomplete="on">
+    <h1>📚 书架</h1>
+    <input id="pw" type="password" name="password" autocomplete="current-password" placeholder="密码" required autofocus>
+    <button id="go" type="submit">打开</button>
+    <p id="msg" role="status"></p>
+  </form>
+  <script src="./crypt.js"></script>
+  <script>
+    (async () => {
+      const BASE = new URL('./', location.href).pathname;
+      const $ = (id) => document.getElementById(id);
+      const say = (t) => { $('msg').textContent = t; };
+      const busy = (b) => { $('go').disabled = b; $('go').textContent = b ? '解锁中…' : '打开'; };
+
+      if (!('serviceWorker' in navigator) || !window.crypto || !crypto.subtle || !window.indexedDB || !window.DecompressionStream) {
+        busy(true); $('go').textContent = '打不开';
+        return say('这个浏览器太旧或在隐私模式下，打不开网页版书架。');
+      }
+      const reg = await navigator.serviceWorker.register(BASE + 'sw.js', { scope: BASE, updateViaCache: 'none' });
+
+      // the service worker serves the reader once it is active and this device holds the key
+      async function enter() {
+        await navigator.serviceWorker.ready;
+        const n = +(sessionStorage.getItem('kr-shelf-go') || 0);
+        if (n >= 2) { sessionStorage.removeItem('kr-shelf-go'); busy(false); return say('页面没有被接管，请再刷新一次。'); }
+        sessionStorage.setItem('kr-shelf-go', String(n + 1));
+        location.reload();
+      }
+
+      if (new URLSearchParams(location.search).has('logout')) {
+        await Shelf.forget();
+        for (const w of [reg.active, reg.waiting, reg.installing]) if (w) w.postMessage('reset');
+        history.replaceState(null, '', BASE);
+        say('已退出：这台设备上的钥匙、缓存和未上线的评论副本都清掉了。');
+      } else {
+        const st = await Shelf.get('kv', 'key').catch(() => null);
+        if (st) {
+          busy(true);
+          try {
+            await Shelf.manifest(BASE, st.key, await Shelf.site(BASE));
+            return enter();
+          } catch (err) {
+            busy(false);
+            if (Shelf.isWrongKey(err)) { await Shelf.forget(); say('书架换了密码，请重新输入。'); }
+            else say('暂时打不开：' + err.message);
+          }
+        }
+      }
+
+      $('f').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        busy(true); say('');
+        try {
+          const site = await Shelf.site(BASE);
+          const key = await Shelf.deriveKey($('pw').value, site);
+          await Shelf.manifest(BASE, key, site);
+          await Shelf.put('kv', 'key', { key, salt: site.salt, iter: site.iter });
+          for (const w of [reg.active, reg.waiting, reg.installing]) if (w) w.postMessage('reset');
+          await enter();
+        } catch (err) {
+          busy(false);
+          say(Shelf.isWrongKey(err) ? '密码不对。' : '出错了：' + err.message);
+          $('pw').select();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
